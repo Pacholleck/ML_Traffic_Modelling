@@ -1,0 +1,391 @@
+---
+title: "MachineLearing - Traffic"
+author: "Adnan Sevnic, Dustin Pacholleck"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+
+output:
+  html_document:
+    self_contained: true
+    lib_dir: libs
+    theme: spacelab
+    highlight: tango
+    toc: true
+    toc_float: false
+
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+	message = FALSE,
+	warning = FALSE,
+	include = TRUE,
+	echo = FALSE
+)
+```
+
+# Machine Learning Project - Traffic Data: Prep
+
+```{r libraries, include=FALSE}
+#load all needed packages
+Sys.setenv(LANG = "en")
+if(!require(glmnet)) install.packages("glmnet",repos = "http://cran.us.r-project.org")
+library(glmnet)
+library(dplyr)
+library(readr)
+library(ggplot2)
+if(!require(DescTools)) install.packages("DescTools",repos = "http://cran.us.r-project.org")
+library(caret)
+library(tibble)
+library(purrr)
+library(corrplot)
+library(DescTools)
+library(stargazer)
+library(knitr)
+
+
+
+setwd("C:/Users/duzzi/OneDrive/University of Warsaw/2nd Semester/Machine Learning/_assessment_data_and_desctiption")
+
+# load data
+traffic_train <- read.csv2('traffic_train.csv',sep = ',')
+traffic_test <- read.csv2('traffic_test.csv',sep = ',')
+```
+## Data Preparation
+
+### Overview
+To get a good impression of the data we are working with it is crucial to get an overview of it.
+
+```{R inspection1, echo=FALSE}
+head(traffic_train) %>% 
+  kable()
+```
+Let's have a closer look at summary statistics.
+```{R inspection2, echo=FALSE}
+summary(traffic_train) %>% 
+  kable()
+
+```
+As we can see, certain variables like temperature, etc. were loaded as characters but are in fact numeric. Also the date-time variable needs to be transformed.
+
+After the transformation we once again have a look at the summary statistics:
+```{R transformation, echo=FALSE}
+# transform variables
+
+# datetime
+traffic_train$date_time <- as.POSIXct(traffic_train$date_time,format= "%Y-%m-%d %H:%M:%S")
+traffic_test$date_time <- as.POSIXct(traffic_test$date_time, format= "%Y-%m-%d %H:%M:%S")
+
+traffic_train$weather_general <- as.factor(traffic_train$weather_general)
+traffic_test$weather_general <- as.factor(traffic_test$weather_general)
+
+traffic_train$weather_detailed <- as.factor(traffic_train$weather_detailed)
+traffic_test$weather_detailed <- as.factor(traffic_test$weather_detailed)
+
+
+traffic_train$temperature <- as.numeric(traffic_train$temperature)
+traffic_test$temperature <- as.numeric(traffic_test$temperature)
+
+traffic_train$rain_mm <- as.numeric(traffic_train$rain_mm)
+traffic_train$snow_mm <- as.numeric(traffic_train$snow_mm)
+
+summary(traffic_train) %>% 
+  kable()
+
+```
+As we can see, the data includes 3 missing variables which were not missing before the change of datatype for date-time. Therefore, we have to find out where the transformation caused an error and can correct it. 
+```{R missings, echo=FALSE}
+# Check for missings
+#sapply(traffic_train, function(x) sum(is.na(x)))
+
+
+missings <- which(is.na(traffic_train$date_time))
+traffic_train[missings,] %>% 
+  kable()
+
+#fix missings
+traffic_train[missings,'date_time'] <- c('2015-03-29 02:00:00','2015-03-29 02:00:00','2016-03-27 02:00:00')
+
+```
+
+### Date-Time
+The variable date-time includes valuable further information which might help to train the models. 
+Therefore, we are extracting from it year, month, day, hour and weekday.
+Afterwards, we inspect the newly formed variables.
+
+```{R datetime, echo=FALSE}
+# Extract from datetime
+traffic_test$year <- as.factor(format(traffic_test$date_time, format = '%Y'))
+traffic_test$month <- as.factor(format(traffic_test$date_time, format = '%m'))
+traffic_test$day <- as.factor(format(traffic_test$date_time, format = '%d'))
+traffic_test$hour <- as.factor(format(traffic_test$date_time, format = '%H'))
+traffic_test$weekday <- as.factor(weekdays(traffic_test$date_time)) 
+
+traffic_train$year <- as.factor(format(traffic_train$date_time, format = '%Y'))
+traffic_train$month <- as.factor(format(traffic_train$date_time, format = '%m'))
+traffic_train$day <- as.factor(format(traffic_train$date_time, format = '%d'))
+traffic_train$hour <- as.factor(format(traffic_train$date_time, format = '%H'))
+traffic_train$weekday <- as.factor(weekdays(traffic_train$date_time)) 
+
+summary(traffic_train[,c("year", "month", "day", "hour", "weekday")]) %>% 
+  kable()
+```
+## Split Train dataset
+
+For training and evaluating our models we will split the Train dataset into training and testing subsets.  
+We split here the dataset not by time but randomly with a 70/30 fraction. Afterwards, we make sure that the data has similar properties. 
+
+### Visualize Traffic over Time
+
+
+```{R echo=FALSE}
+
+ggplot() + 
+geom_point(data=traffic_train, aes(x=date_time, y=traffic), color='blue') 
+
+```
+Since traffic seemingly does not have a time trend we can do a random split of 70/30.
+
+### Split Data
+
+```{R split, echo=FALSE}
+# split by random
+set.seed(987654321)
+
+traffic_which_train <- createDataPartition(traffic_train$traffic, # target variable
+                                          # share of the training sample
+                                          p = 0.7, 
+                                          # should result be a list?
+                                          list = FALSE) 
+traffic_training <- traffic_train[traffic_which_train,]
+traffic_testing <- traffic_train[-traffic_which_train,]
+
+print("Training")
+summary(traffic_training$traffic) 
+print("Testing")
+summary(traffic_testing$traffic) 
+
+```
+The summary statistics of the test and train subset are statistically similar.
+
+```{R eval=FALSE, include=FALSE}
+
+  
+# alternative by time
+
+library(forecast)
+train <- head(traffic_train, round(length(traffic_train) * 0.6))
+h <- length(traffic_train) - length(train)
+test <- tail(traffic_train, h)
+
+````
+
+
+## Data Exploration
+
+Let us inspect the variables more in detail.
+
+### Weather {.tabset}
+#### General
+```{R echo=FALSE}
+table(traffic_training$weather_general)%>% 
+  kable()
+```
+#### Detailed
+```{R}
+table(traffic_training$weather_detailed) %>% 
+  kable()
+```
+
+### Distibution of Traffic {.tabset}
+
+#### Histogram of Traffic
+```{R fig.align = 'left', fig.width=5.5, fig.height=3}
+# lets check the distribution (histogram) 
+# of the dependent variable traffic
+
+ggplot(traffic_training,
+       aes(x = traffic)) +
+  geom_histogram(fill = "blue",
+                 bins = 100) +
+  theme_bw()
+```
+
+#### Histogram of Log of Traffic
+
+```{R fig.align = 'left', fig.width=5.5, fig.height=3}
+ggplot(traffic_training,
+       aes(x = log(traffic + 1))) +
+  geom_histogram(fill = "blue",
+                 bins = 100) +
+  theme_bw()
+
+```
+
+
+
+## Analyse Training Subset
+
+### Check for Correlations of Numerical Variables {.tabset}
+```{R include=FALSE}
+# Check for correlating variables
+traffic_numeric_vars <- 
+  # check if variable is numeric
+  sapply(traffic_training, is.numeric) %>% 
+  # select those which are
+  which() %>% 
+  # and keep just their names
+  names()
+
+
+traffic_correlations <- 
+  cor(traffic_training[, traffic_numeric_vars],
+      use = "pairwise.complete.obs")
+```
+
+#### Table
+```{R echo=FALSE}
+traffic_correlations%>% 
+  kable()
+
+```
+
+#### CorrPlot
+```{R echo=FALSE, fig.align='left', fig.height=4, fig.width=6}
+corrplot.mixed(traffic_correlations,
+               upper = "square",
+               lower = "number",
+               tl.col = "black", # color of labels (variable names)
+               tl.pos = "lt")  # position of labels (lt = left and top)
+
+```
+
+### Check for Correlations of Categorial Variables
+
+```{R}
+traffic_categorical_vars <- 
+  # check if variable is a factor
+  sapply(traffic_training, is.factor) %>% 
+  # select those which are
+  which() %>% 
+  # and keep just their names
+  names()
+
+
+traffic_F_anova <- function(categorical_var) {
+  anova_ <- aov(traffic_training$traffic ~ 
+                  traffic_training[[categorical_var]]) 
+  
+  return(summary(anova_)[[1]][1, 4])
+}
+
+sapply(traffic_categorical_vars,
+       traffic_F_anova) %>% 
+  # in addition lets sort them
+  # in the decreasing order of F
+  #  and store as an object
+  sort(decreasing = TRUE) -> traffic_anova_all_categorical
+
+traffic_anova_all_categorical %>% 
+  kable()
+```
+Here we can see that the highest F Values are for hour and weekday which means they might be important to include in our model.
+We also see that weather general is higher correlated with traffic then detailed. 
+Besides that, it might be advantageous to not include year or month.  
+
+#### Visualisation {.tabset}
+
+##### Traffic - Hour 
+```{R echo=FALSE,fig.align='left', fig.height=3, fig.width=5}
+ggplot(traffic_training,
+       aes(x = hour,
+           y = traffic)) +
+  geom_boxplot(fill = "blue") +
+  theme_bw()
+
+```
+CramerV
+```{R echo = FALSE}
+DescTools::CramerV(traffic_training$traffic,
+                   traffic_training$hour)
+```
+
+##### Traffic - Weekday 
+```{R echo=FALSE,fig.align='left', fig.height=3, fig.width=5}
+ggplot(traffic_training,
+       aes(x = weekday,
+           y = traffic)) +
+  geom_boxplot(fill = "blue") +
+  theme_bw()
+
+```
+CramerV
+```{R echo = FALSE}
+
+DescTools::CramerV(traffic_training$traffic,
+                   traffic_training$weekday)
+```
+
+##### Traffic - Weather General 
+```{R echo=FALSE,fig.align='left', fig.height=3, fig.width=5}
+ggplot(traffic_training,
+       aes(x = weather_general,
+           y = traffic)) +
+  geom_boxplot(fill = "blue") +
+  theme_bw()
+
+```
+CramerV
+```{R echo = FALSE}
+
+DescTools::CramerV(traffic_training$traffic,
+                   traffic_training$weather_general)
+```
+
+### (Near) Zero Variance
+```{R echo=FALSE}
+# test for zero or near zero variance
+
+nearZeroVar(traffic_training,
+            saveMetrics = TRUE) -> traffic_nzv_stats
+
+# and display it sorted in descending order
+# by the columns zeroVar, nzv and freqRatio
+
+traffic_nzv_stats %>% 
+  # we add rownames of the frame
+  # (with names of variables)
+  # as a new column in the data
+  rownames_to_column("variable") %>% 
+  # and sort it in the descreasing order
+  arrange(-zeroVar, -nzv, -freqRatio)%>% 
+  kable()
+```
+Here we can see that snow_mm and rain_mm are near zero variance variables. We might consider dropping them. Especially, since the correlation with traffic seems to be low and those variables are correlated with weather (snow or rain) and temperature. 
+```{R eval=FALSE, include=FALSE}
+table(traffic_training$rain_mm)
+```
+
+```{R include=FALSE}
+
+traffic_variables_all <- names(traffic_training)
+
+(traffic_variables_nzv <- nearZeroVar(traffic_training, 
+                                      names = TRUE) )
+
+traffic_variables_all <-
+  traffic_variables_all[!traffic_variables_all %in% 
+                         traffic_variables_nzv]
+
+traffic_variables_all <-  traffic_variables_all[-which(traffic_variables_all == "date_time")]
+
+
+save(list= c("traffic_variables_all"), file = "traffic_variables_list.RData")
+
+
+save(list= c("traffic_test","traffic_train","traffic_training", "traffic_testing"), file = "traffic_train_test.RData")
+
+
+```
+
+
+

@@ -1,0 +1,348 @@
+---
+title: "MachineLearing - Traffic: Models"
+author: "Adnan Sevnic, Dustin Pacholleck"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+
+output:
+  html_document:
+    self_contained: true
+    lib_dir: libs
+    theme: spacelab
+    highlight: tango
+    toc: true
+    toc_float: false
+
+---
+
+```{r setup, include=FALSE, eval = TRUE}
+knitr::opts_chunk$set(
+	eval = FALSE,
+	echo = FALSE,
+	message = FALSE,
+	warning = FALSE,
+	include = TRUE
+)
+```
+
+# Machine Learning Project - Traffic Data: Modelling 
+
+In this part of we use the preprocessed data to model the relationship between traffic and the different variables.
+
+We do this by using different models:
+- Linear Regression
+- Elastic Net
+- KNN
+
+```{R include=FALSE, eval = TRUE}
+Sys.setenv(LANG = "en")
+if(!require(glmnet)) install.packages("glmnet",repos = "http://cran.us.r-project.org")
+library(glmnet)
+library(dplyr)
+library(readr)
+library(ggplot2)
+library(readr)
+if(!require(olsrr)) install.packages("olsrr",repos = "http://cran.us.r-project.org")
+library(olsrr)
+if(!require(DescTools)) install.packages("DescTools",repos = "http://cran.us.r-project.org")
+library(caret)
+library(tibble)
+library(purrr)
+library(corrplot)
+library(DescTools)
+library(stargazer)
+library(knitr)
+source("functions/F_regression_metrics.R")
+library("ggpubr")
+
+theme_set(
+  theme_bw() +
+    theme(legend.position = "top")
+  )
+
+
+setwd("C:/Users/duzzi/OneDrive/University of Warsaw/2nd Semester/Machine Learning/_assessment_data_and_desctiption")
+
+load("traffic_train_test.RData")
+load("traffic_models.RData")
+options(contrasts = c("contr.treatment",  # for non-ordinal factors
+                      "contr.treatment")) # for ordinal factors
+```
+
+## Linear Regression
+
+For the linear models we try different approaches. 
+1. Traffic ~ hour
+2. Traffic ~ All variables (except date_time and year)
+3. Traffic ~ clouds, temperature, month, hour, weekday
+4. Traffic ~ backwards elimination with AIC based on 2.
+
+```{R eval=FALSE, results='asis', cache= TRUE}
+
+traffic_lm1 <-lm(traffic ~ hour, data = traffic_training)
+
+#summary(traffic_lm1) 
+
+traffic_lm2 <- lm(traffic ~ weather_general +weather_detailed+ clouds_coverage_pct + temperature + rain_mm + snow_mm + month + day + hour + weekday, data = traffic_training)
+
+#summary(traffic_lm2)
+
+traffic_lm3 <- lm(traffic ~ clouds_coverage_pct + temperature + month + hour + weekday, data = traffic_training)
+
+#summary(traffic_lm3)
+
+ols_step_backward_aic(traffic_lm2, 
+                      progress =  FALSE) -> traffic_lm2_backward_AIC
+
+#summary(traffic_lm2_backward_AIC$model)
+```
+
+```{R echo=FALSE, eval=TRUE,results='asis'}
+stargazer(traffic_lm1, traffic_lm2, traffic_lm3,traffic_lm2_backward_AIC$model, type = "html")
+```
+
+
+## Elastic Net
+
+```{R elastic net, echo=FALSE, eval=TRUE, cache = TRUE}
+ctrl_cv5 <- trainControl(method = "cv",
+                         number = 5)
+parameters_elastic <- expand.grid(alpha = seq(0, 1, 0.2), 
+                                  lambda = seq(10, 1e4, 10))
+
+
+set.seed(123456789)
+
+traffic_elastic <- train(traffic ~ weather_general + weather_detailed + clouds_coverage_pct + 
+                           temperature + rain_mm + month + day + hour + weekday, 
+                        data = traffic_training,
+                        method = "glmnet", 
+                        tuneGrid = parameters_elastic,
+                        trControl = ctrl_cv5)
+#traffic_elastic
+
+
+```
+
+```{R eval=TRUE}
+plot(traffic_elastic)
+```
+
+The final values used for the model were alpha = 0.2 and lambda = 10.
+
+## KNN
+
+Here we produce different models for our comparison.
+First we used one model with k=5 and no tuning, and one with 145 k and tuning.
+```{R "KNN k=5", cache=TRUE, eval=FALSE}
+
+ctrl_nocv <- trainControl(method = "none")
+
+traffic_train_knn5 <- 
+  train(traffic ~ ., 
+        data = traffic_training %>% 
+          # we exclude date_time
+          dplyr::select(-c(date_time,year)),
+        # model type - now knn!!
+        method = "knn",
+        # train control
+        trControl = ctrl_nocv)
+
+#traffic_train_knn5_fitted <- predict(traffic_train_knn5,
+#                                  traffic_training)
+
+#########################################
+
+sqrt(nrow(traffic_training)) #145
+
+k_value <- data.frame(k = 145)
+
+traffic_train_knn145 <- 
+  train(traffic ~ ., 
+        data = traffic_training %>% 
+          # we exclude date_time
+          dplyr::select(-c(date_time,year)),
+        # model type - now knn!!
+        method = "knn",
+        # train control
+        trControl = ctrl_nocv,
+        # we give the parameter(s)
+        # required by the model
+        tuneGrid = k_value)
+
+#traffic_train_knn145_fitted <- predict(traffic_train_knn145,
+#                                       traffic_testing)
+
+
+#######################################################
+
+
+
+```
+
+
+```{R echo=FALSE, warning=FALSE, cache=TRUE, eval=FALSE}
+different_k <- data.frame(k = seq(1, 100, 5))
+
+ctrl_cv5 <- trainControl(method = "cv",
+                         number = 3)
+
+
+set.seed(987654321)
+
+traffic_train_knn_tuned <- 
+  train(traffic ~ ., 
+        data = traffic_training %>% 
+          # we exclude date_time
+          dplyr::select(-c(date_time,year)),
+        # model type - now knn!!
+        method = "knn",
+        # validation used!
+        trControl = ctrl_cv5,
+        # parameters to be compared
+        tuneGrid = different_k)
+
+
+
+
+##################################################
+
+traffic_train_knn_scaled <- 
+  train(traffic ~ ., 
+        data = traffic_training %>% 
+          # we exclude date_time
+          dplyr::select(-c(date_time,year)),
+        # model type - now knn!!
+        method = "knn",
+        # validation used!
+        trControl = ctrl_cv5,
+        # parameters to be compared
+        tuneGrid = different_k,
+        # data transformation
+        preProcess = c("range"))
+
+
+```
+
+Besides this, we also used tuned and scaled models. Their behavior is displayed below for different k. 
+
+```{R echo=FALSE, eval=TRUE}
+
+knn_1 <- plot(traffic_train_knn_tuned, main='KNN Tuned')
+knn_2 <- plot(traffic_train_knn_scaled, main='KNN Scaled')
+ggarrange(knn_1,knn_2)
+
+```
+
+## Evaluation of Models
+
+Besides MAPE we also compare other metrics for goodness of prediction.
+
+```{R echo=FALSE, eval=TRUE, cache=TRUE}
+traffic_models_list <- list(traffic_lm1 = traffic_lm1,
+                           traffic_lm2 = traffic_lm2,
+                           traffic_lm3 = traffic_lm3,
+                           traffic_lm2_backward_AIC = traffic_lm2_backward_AIC$model,
+                           traffic_elastic = traffic_elastic,
+                           traffic_train_knn5 = traffic_train_knn5,
+                           traffic_train_knn145 = traffic_train_knn145,
+                           traffic_train_knn_tuned = traffic_train_knn_tuned
+                           #traffic_train_knn_scaled = traffic_train_knn_scaled
+                           )
+
+
+save(list= c('traffic_lm1','traffic_lm2', 'traffic_lm3',
+             'traffic_lm2_backward_AIC','traffic_elastic',
+             'traffic_train_knn5','traffic_train_knn145', 'traffic_train_knn_tuned','traffic_train_knn_scaled'), file = "traffic_models.RData")
+
+
+
+# and use vectorized approach to 
+# make predictions easier
+# (here: fitted values - in the training sample)
+
+levels <- levels(traffic_train$weather_detailed)
+
+traffic_train_knn_tuned$xlevels$weather_detailed <- levels
+traffic_lm2$xlevels$weather_detailed <- levels
+traffic_lm2_backward_AIC$model$xlevels$weather_detailed <- levels
+traffic_elastic$xlevels$weather_detailed <- levels
+traffic_train_knn5$xlevels$weather_detailed <- levels
+traffic_train_knn145$xlevels$weather_detailed <- levels
+
+traffic_fitted <- list()
+traffic_fitted$traffic_lm1 <- predict(traffic_lm1, newdata = traffic_testing)
+traffic_fitted$traffic_lm2 <- predict(traffic_lm2, newdata = traffic_testing)
+traffic_fitted$traffic_lm3 <- predict(traffic_lm3, newdata = traffic_testing)
+traffic_fitted$traffic_lm2_backward_AIC <- predict(traffic_lm2_backward_AIC$model, newdata = traffic_testing)
+traffic_fitted$traffic_elastic <- predict(traffic_elastic, newdata = traffic_testing)
+traffic_fitted$traffic_train_knn5 <- predict(traffic_train_knn5, newdata = traffic_testing)
+traffic_fitted$traffic_train_knn145 <- predict(traffic_train_knn145, newdata = traffic_testing)
+traffic_fitted$traffic_train_knn_tuned <- predict(traffic_train_knn_tuned, newdata = traffic_testing)
+
+traffic_fitted <- as.data.frame(traffic_fitted)
+
+# traffic_models_list %>% 
+#   sapply(function(x) predict(x, newdata = traffic_testing)) %>% 
+#   # function sapply() returns a matrix here,
+#   # we immediately convert it to a data frame
+#   # and save as a new object
+#   data.frame() -> traffic_fitted
+
+
+```
+```{R eval=TRUE}
+sapply(traffic_fitted,
+       function(x) regressionMetrics(x,
+                                     traffic_testing$traffic)) %>% 
+  t()%>% 
+  kable()
+```
+
+Since, in our dataset are values with 0 traffic we can not apply MAPE so easily as seen by the negative values. 
+Nevertheless,the simple linear regression (lm3) with **Traffic ~ clouds, temperature, month, hour, weekday** yields the best results on most evaluation metrics.
+It yields a MAPE of 0.3273 which is therefore the expected MAPE for the test dataset.
+Let us visualize the results of lm3.
+
+```{R echo=FALSE,eval=TRUE}
+
+
+#traffic_predicted <- predict(traffic_fitted)
+
+plot_1 <- ggplot(data.frame(error = traffic_testing$traffic - traffic_fitted$traffic_lm3),
+       aes(x = error)) +
+  geom_histogram(fill = "blue",
+                 bins = 100) +
+  theme_bw() + ggtitle("Error of Forcast")
+
+# and plot real values against the predicted
+
+plot_2 <- ggplot(data.frame(real = traffic_testing$traffic,
+                  predicted = traffic_fitted$traffic_lm3),
+       aes(x = predicted, 
+           y = real)) +
+  geom_point(col = "blue") +
+  theme_bw() +
+  ggtitle("Real vs. Prediction")
+
+ggarrange(plot_1,plot_2)
+
+
+```
+
+For further verification of the result we check the correlation.
+
+```{R echo=FALSE,eval=TRUE}
+cor(traffic_testing$traffic,
+    traffic_fitted$traffic_lm3)
+```
+
+
+
+```{R include=FALSE}
+# Predict Test
+
+traffic_test$prediction <- predict(traffic_lm3, newdata = traffic_test) 
+traffic_test$prediction <- ifelse(traffic_test$prediction <0,0,traffic_test$prediction)
+write.csv(traffic_test,"traffic_test_w_predictions.csv", row.names = TRUE)
+
+```
